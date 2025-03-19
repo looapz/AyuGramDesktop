@@ -1,9 +1,3 @@
-// This is the source code of AyuGram for Desktop.
-//
-// We do not and cannot prevent the use of our code,
-// but be respectful and credit the original author.
-//
-// Copyright @Radolyn, 2025
 #include "ayu_settings.h"
 
 #include "ayu/ui/ayu_logo.h"
@@ -22,12 +16,15 @@
 
 using json = nlohmann::json;
 
-namespace AyuSettings {
+namespace Ayu {
 
 const std::string filename = "tdata/ayu_settings.json";
+const std::string themeFilename = "tdata/ayu_theme.json";
 
-std::optional<AyuGramSettings> settings = std::nullopt;
+// Синглтон
+AyuSettings* AyuSettings::_instance = nullptr;
 
+// Переменные для реактивного обновления
 rpl::variable<bool> sendReadMessagesReactive;
 rpl::variable<bool> sendReadStoriesReactive;
 rpl::variable<bool> sendOnlinePacketsReactive;
@@ -46,7 +43,8 @@ rpl::event_stream<> historyUpdateReactive;
 
 rpl::lifetime lifetime = rpl::lifetime();
 
-bool ghostModeEnabled_util(const AyuGramSettings &settingsUtil) {
+// Проверка на включенный режим-призрак
+bool ghostModeEnabled_util(const AyuSettings &settingsUtil) {
 	return
 		!settingsUtil.sendReadMessages
 		&& !settingsUtil.sendReadStories
@@ -55,146 +53,16 @@ bool ghostModeEnabled_util(const AyuGramSettings &settingsUtil) {
 		&& settingsUtil.sendOfflinePacketAfterOnline;
 }
 
-void initialize() {
-	if (settings.has_value()) {
-		return;
+// Получение экземпляра синглтона
+AyuSettings* AyuSettings::GetInstance() {
+	if (!_instance) {
+		_instance = new AyuSettings();
+		_instance->Initialize();
 	}
-
-	settings = AyuGramSettings();
-
-	sendReadMessagesReactive.value() | rpl::filter(
-		[=](bool val)
-		{
-			return (val != settings->sendReadMessages);
-		}) | start_with_next(
-		[=](bool val)
-		{
-			ghostModeEnabled =
-				ghostModeEnabled_util(settings.value());
-		},
-		lifetime);
-	// ..
-	sendReadStoriesReactive.value() | rpl::filter(
-		[=](bool val)
-		{
-			return (val != settings->sendReadStories);
-		}) | start_with_next(
-		[=](bool val)
-		{
-			ghostModeEnabled =
-				ghostModeEnabled_util(settings.value());
-		},
-		lifetime);
-	// ..
-	sendOnlinePacketsReactive.value() | rpl::filter(
-		[=](bool val)
-		{
-			return (val != settings->sendOnlinePackets);
-		}) | start_with_next(
-		[=](bool val)
-		{
-			ghostModeEnabled =
-				ghostModeEnabled_util(settings
-					.value());
-		},
-		lifetime);
-	// ..
-	sendUploadProgressReactive.value() | rpl::filter(
-		[=](bool val)
-		{
-			return (val != settings->sendUploadProgress);
-		}) | start_with_next(
-		[=](bool val)
-		{
-			ghostModeEnabled =
-				ghostModeEnabled_util(settings
-					.value());
-		},
-		lifetime);
-	// ..
-	sendOfflinePacketAfterOnlineReactive.value() | rpl::filter(
-		[=](bool val)
-		{
-			return (val
-				!= settings->sendOfflinePacketAfterOnline);
-		}) | start_with_next(
-		[=](bool val)
-		{
-			ghostModeEnabled =
-				ghostModeEnabled_util(
-					settings.value());
-		},
-		lifetime);
+	return _instance;
 }
 
-void postinitialize() {
-	sendReadMessagesReactive = settings->sendReadMessages;
-	sendReadStoriesReactive = settings->sendReadStories;
-	sendUploadProgressReactive = settings->sendUploadProgress;
-	sendOfflinePacketAfterOnlineReactive = settings->sendOfflinePacketAfterOnline;
-	sendOnlinePacketsReactive = settings->sendOnlinePackets;
-
-	deletedMarkReactive = settings->deletedMark;
-	editedMarkReactive = settings->editedMark;
-	showPeerIdReactive = settings->showPeerId;
-
-	hideFromBlockedReactive = settings->hideFromBlocked;
-
-	ghostModeEnabled = ghostModeEnabled_util(settings.value());
-}
-
-AyuGramSettings &getInstance() {
-	initialize();
-	return settings.value();
-}
-
-void load() {
-	std::ifstream file(filename);
-	if (!file.good()) {
-		return;
-	}
-
-	initialize();
-
-	try {
-		json p;
-		file >> p;
-		file.close();
-
-		try {
-			settings = p.get<AyuGramSettings>();
-		} catch (...) {
-			LOG(("AyuGramSettings: failed to parse settings file"));
-		}
-	} catch (...) {
-		LOG(("AyuGramSettings: failed to read settings file (not json-like)"));
-	}
-
-	if (cGhost()) {
-		settings->sendReadMessages = false;
-		settings->sendReadStories = false;
-		settings->sendOnlinePackets = false;
-		settings->sendUploadProgress = false;
-		settings->sendOfflinePacketAfterOnline = true;
-	}
-
-	postinitialize();
-}
-
-void save() {
-	initialize();
-
-	json p = settings.value();
-
-	std::ofstream file;
-	file.open(filename);
-	file << p.dump(4);
-	file.close();
-
-	postinitialize();
-}
-
-AyuGramSettings::AyuGramSettings() {
+AyuSettings::AyuSettings() {
 	// ~ Ghost essentials
 	sendReadMessages = true;
 	sendReadStories = true;
@@ -279,16 +147,16 @@ AyuGramSettings::AyuGramSettings() {
 	hideAllChatsFolder = false;
 
 	/*
-		 * channelBottomButton = 0 means "Hide"
-		 * channelBottomButton = 1 means "Mute"/"Unmute"
-		 * channelBottomButton = 2 means "Discuss" + fallback to "Mute"/"Unmute"
+		* channelBottomButton = 0 means "Hide"
+		* channelBottomButton = 1 means "Mute"/"Unmute"
+		* channelBottomButton = 2 means "Discuss" + fallback to "Mute"/"Unmute"
 	*/
 	channelBottomButton = 2;
 
 	/*
-		 * showPeerId = 0 means no ID shown
-		 * showPeerId = 1 means ID shown as for Telegram API devs
-		 * showPeerId = 2 means ID shown as for Bot API devs (-100)
+		* showPeerId = 0 means no ID shown
+		* showPeerId = 1 means ID shown as for Telegram API devs
+		* showPeerId = 2 means ID shown as for Bot API devs (-100)
 	*/
 	showPeerId = 2;
 	showMessageSeconds = false;
@@ -300,32 +168,204 @@ AyuGramSettings::AyuGramSettings() {
 	voiceConfirmation = false;
 }
 
-void AyuGramSettings::set_sendReadMessages(bool val) {
+AyuSettings::~AyuSettings() {
+	// Сохраняем настройки при уничтожении синглтона
+	Save();
+}
+
+void AyuSettings::Initialize() {
+	// Инициализация реактивных связей
+	sendReadMessagesReactive.value() | rpl::filter(
+		[=](bool val)
+		{
+			return (val != sendReadMessages);
+		}) | rpl::start_with_next(
+		[=](bool val)
+		{
+			ghostModeEnabled =
+				ghostModeEnabled_util(*this);
+		},
+		lifetime);
+	
+	sendReadStoriesReactive.value() | rpl::filter(
+		[=](bool val)
+		{
+			return (val != sendReadStories);
+		}) | rpl::start_with_next(
+		[=](bool val)
+		{
+			ghostModeEnabled =
+				ghostModeEnabled_util(*this);
+		},
+		lifetime);
+	
+	sendOnlinePacketsReactive.value() | rpl::filter(
+		[=](bool val)
+		{
+			return (val != sendOnlinePackets);
+		}) | rpl::start_with_next(
+		[=](bool val)
+		{
+			ghostModeEnabled =
+				ghostModeEnabled_util(*this);
+		},
+		lifetime);
+	
+	sendUploadProgressReactive.value() | rpl::filter(
+		[=](bool val)
+		{
+			return (val != sendUploadProgress);
+		}) | rpl::start_with_next(
+		[=](bool val)
+		{
+			ghostModeEnabled =
+				ghostModeEnabled_util(*this);
+		},
+		lifetime);
+	
+	sendOfflinePacketAfterOnlineReactive.value() | rpl::filter(
+		[=](bool val)
+		{
+			return (val != sendOfflinePacketAfterOnline);
+		}) | rpl::start_with_next(
+		[=](bool val)
+		{
+			ghostModeEnabled =
+				ghostModeEnabled_util(*this);
+		},
+		lifetime);
+	
+	// Инициализация реактивных переменных текущими значениями
+	sendReadMessagesReactive = sendReadMessages;
+	sendReadStoriesReactive = sendReadStories;
+	sendUploadProgressReactive = sendUploadProgress;
+	sendOfflinePacketAfterOnlineReactive = sendOfflinePacketAfterOnline;
+	sendOnlinePacketsReactive = sendOnlinePackets;
+
+	deletedMarkReactive = deletedMark;
+	editedMarkReactive = editedMark;
+	showPeerIdReactive = showPeerId;
+
+	hideFromBlockedReactive = hideFromBlocked;
+
+	ghostModeEnabled = ghostModeEnabled_util(*this);
+}
+
+void AyuSettings::Load() {
+	// Загрузка основных настроек
+	std::ifstream file(filename);
+	if (file.good()) {
+		try {
+			json p;
+			file >> p;
+			file.close();
+
+			try {
+				// Десериализуем себя из JSON
+				*this = p.get<AyuSettings>();
+			} catch (...) {
+				LOG(("AyuGramSettings: failed to parse settings file"));
+			}
+		} catch (...) {
+			LOG(("AyuGramSettings: failed to read settings file (not json-like)"));
+		}
+	}
+
+	if (cGhost()) {
+		sendReadMessages = false;
+		sendReadStories = false;
+		sendOnlinePackets = false;
+		sendUploadProgress = false;
+		sendOfflinePacketAfterOnline = true;
+	}
+	
+	// Загружаем настройки темы
+	std::ifstream themeFile(themeFilename);
+	if (themeFile.good()) {
+		try {
+			json p;
+			themeFile >> p;
+			themeFile.close();
+			
+			// Попытка десериализации настроек темы
+			try {
+				p.get_to(_themeSettings);
+			} catch (...) {
+				LOG(("AyuGramSettings: failed to parse theme settings file"));
+			}
+		} catch (...) {
+			LOG(("AyuGramSettings: failed to read theme settings file (not json-like)"));
+		}
+	}
+	
+	// Обновляем реактивные переменные
+	Initialize();
+}
+
+void AyuSettings::Save() {
+	// Сохранение основных настроек
+	json p = *this;
+	std::ofstream file;
+	file.open(filename);
+	file << p.dump(4);
+	file.close();
+	
+	// Сохранение настроек темы
+	json themeJson = _themeSettings;
+	std::ofstream themeFile;
+	themeFile.open(themeFilename);
+	themeFile << themeJson.dump(4);
+	themeFile.close();
+}
+
+const ThemeSettings& AyuSettings::GetThemeSettings() const {
+	return _themeSettings;
+}
+
+void AyuSettings::SetThemeSettings(const ThemeSettings& settings) {
+	if (_themeSettings != settings) {
+		_themeSettings = settings;
+		
+		// Сохраняем изменения и уведомляем об изменении темы
+		Save();
+		notifyThemeChanged();
+	}
+}
+
+void AyuSettings::notifyThemeChanged() {
+	_themeChanged.fire({});
+}
+
+rpl::producer<> AyuSettings::themeChanged() const {
+	return _themeChanged.events();
+}
+
+void AyuSettings::set_sendReadMessages(bool val) {
 	sendReadMessages = val;
 	sendReadMessagesReactive = val;
 }
 
-void AyuGramSettings::set_sendReadStories(bool val) {
+void AyuSettings::set_sendReadStories(bool val) {
 	sendReadStories = val;
 	sendReadStoriesReactive = val;
 }
 
-void AyuGramSettings::set_sendOnlinePackets(bool val) {
+void AyuSettings::set_sendOnlinePackets(bool val) {
 	sendOnlinePackets = val;
 	sendOnlinePacketsReactive = val;
 }
 
-void AyuGramSettings::set_sendUploadProgress(bool val) {
+void AyuSettings::set_sendUploadProgress(bool val) {
 	sendUploadProgress = val;
 	sendUploadProgressReactive = val;
 }
 
-void AyuGramSettings::set_sendOfflinePacketAfterOnline(bool val) {
+void AyuSettings::set_sendOfflinePacketAfterOnline(bool val) {
 	sendOfflinePacketAfterOnline = val;
 	sendOfflinePacketAfterOnlineReactive = val;
 }
 
-void AyuGramSettings::set_ghostModeEnabled(bool val) {
+void AyuSettings::set_ghostModeEnabled(bool val) {
 	set_sendReadMessages(!val);
 	set_sendReadStories(!val);
 	set_sendOnlinePackets(!val);
@@ -339,231 +379,232 @@ void AyuGramSettings::set_ghostModeEnabled(bool val) {
 	}
 }
 
-void AyuGramSettings::set_markReadAfterAction(bool val) {
+void AyuSettings::set_markReadAfterAction(bool val) {
 	markReadAfterAction = val;
 }
 
-void AyuGramSettings::set_useScheduledMessages(bool val) {
+void AyuSettings::set_useScheduledMessages(bool val) {
 	useScheduledMessages = val;
 }
 
-void AyuGramSettings::set_sendWithoutSound(bool val) {
+void AyuSettings::set_sendWithoutSound(bool val) {
 	sendWithoutSound = val;
 }
 
-void AyuGramSettings::set_saveDeletedMessages(bool val) {
+void AyuSettings::set_saveDeletedMessages(bool val) {
 	saveDeletedMessages = val;
 }
 
-void AyuGramSettings::set_saveMessagesHistory(bool val) {
+void AyuSettings::set_saveMessagesHistory(bool val) {
 	saveMessagesHistory = val;
 }
 
-void AyuGramSettings::set_saveForBots(bool val) {
+void AyuSettings::set_saveForBots(bool val) {
 	saveForBots = val;
 }
 
-void AyuGramSettings::set_hideFromBlocked(bool val) {
+void AyuSettings::set_hideFromBlocked(bool val) {
 	hideFromBlocked = val;
 	hideFromBlockedReactive = val;
 }
 
-void AyuGramSettings::set_disableAds(bool val) {
+void AyuSettings::set_disableAds(bool val) {
 	disableAds = val;
 }
 
-void AyuGramSettings::set_disableStories(bool val) {
+void AyuSettings::set_disableStories(bool val) {
 	disableStories = val;
 }
 
-void AyuGramSettings::set_disableCustomBackgrounds(bool val) {
+void AyuSettings::set_disableCustomBackgrounds(bool val) {
 	disableCustomBackgrounds = val;
 }
 
-void AyuGramSettings::set_collapseSimilarChannels(bool val) {
+void AyuSettings::set_collapseSimilarChannels(bool val) {
 	collapseSimilarChannels = val;
 }
 
-void AyuGramSettings::set_hideSimilarChannels(bool val) {
+void AyuSettings::set_hideSimilarChannels(bool val) {
 	hideSimilarChannels = val;
 }
 
-void AyuGramSettings::set_wideMultiplier(double val) {
+void AyuSettings::set_wideMultiplier(double val) {
 	wideMultiplier = val;
 }
 
-void AyuGramSettings::set_spoofWebviewAsAndroid(bool val) {
+void AyuSettings::set_spoofWebviewAsAndroid(bool val) {
 	spoofWebviewAsAndroid = val;
 }
 
-void AyuGramSettings::set_increaseWebviewHeight(bool val) {
+void AyuSettings::set_increaseWebviewHeight(bool val) {
 	increaseWebviewHeight = val;
 }
 
-void AyuGramSettings::set_increaseWebviewWidth(bool val) {
+void AyuSettings::set_increaseWebviewWidth(bool val) {
 	increaseWebviewWidth = val;
 }
 
-void AyuGramSettings::set_disableNotificationsDelay(bool val) {
+void AyuSettings::set_disableNotificationsDelay(bool val) {
 	disableNotificationsDelay = val;
 }
 
-void AyuGramSettings::set_localPremium(bool val) {
+void AyuSettings::set_localPremium(bool val) {
 	localPremium = val;
 }
 
-void AyuGramSettings::set_appIcon(QString val) {
+void AyuSettings::set_appIcon(QString val) {
 	appIcon = std::move(val);
 }
 
-void AyuGramSettings::set_simpleQuotesAndReplies(bool val) {
+void AyuSettings::set_simpleQuotesAndReplies(bool val) {
 	simpleQuotesAndReplies = val;
 }
 
-void AyuGramSettings::set_replaceBottomInfoWithIcons(bool val) {
+void AyuSettings::set_replaceBottomInfoWithIcons(bool val) {
 	replaceBottomInfoWithIcons = val;
 }
 
-void AyuGramSettings::set_deletedMark(QString val) {
+void AyuSettings::set_deletedMark(QString val) {
 	deletedMark = std::move(val);
 	deletedMarkReactive = deletedMark;
 }
 
-void AyuGramSettings::set_editedMark(QString val) {
+void AyuSettings::set_editedMark(QString val) {
 	editedMark = std::move(val);
 	editedMarkReactive = editedMark;
 }
 
-void AyuGramSettings::set_recentStickersCount(int val) {
+void AyuSettings::set_recentStickersCount(int val) {
 	recentStickersCount = val;
 }
 
-void AyuGramSettings::set_showReactionsPanelInContextMenu(int val) {
+void AyuSettings::set_showReactionsPanelInContextMenu(int val) {
 	showReactionsPanelInContextMenu = val;
 }
 
-void AyuGramSettings::set_showViewsPanelInContextMenu(int val) {
+void AyuSettings::set_showViewsPanelInContextMenu(int val) {
 	showViewsPanelInContextMenu = val;
 }
 
-void AyuGramSettings::set_showHideMessageInContextMenu(int val) {
+void AyuSettings::set_showHideMessageInContextMenu(int val) {
 	showHideMessageInContextMenu = val;
 }
 
-void AyuGramSettings::set_showUserMessagesInContextMenu(int val) {
+void AyuSettings::set_showUserMessagesInContextMenu(int val) {
 	showUserMessagesInContextMenu = val;
 }
 
-void AyuGramSettings::set_showMessageDetailsInContextMenu(int val) {
+void AyuSettings::set_showMessageDetailsInContextMenu(int val) {
 	showMessageDetailsInContextMenu = val;
 }
 
-void AyuGramSettings::set_showAttachButtonInMessageField(bool val) {
+void AyuSettings::set_showAttachButtonInMessageField(bool val) {
 	showAttachButtonInMessageField = val;
 	triggerHistoryUpdate();
 }
 
-void AyuGramSettings::set_showCommandsButtonInMessageField(bool val) {
+void AyuSettings::set_showCommandsButtonInMessageField(bool val) {
 	showCommandsButtonInMessageField = val;
 	triggerHistoryUpdate();
 }
 
-void AyuGramSettings::set_showEmojiButtonInMessageField(bool val) {
+void AyuSettings::set_showEmojiButtonInMessageField(bool val) {
 	showEmojiButtonInMessageField = val;
 	triggerHistoryUpdate();
 }
 
-void AyuGramSettings::set_showMicrophoneButtonInMessageField(bool val) {
+void AyuSettings::set_showMicrophoneButtonInMessageField(bool val) {
 	showMicrophoneButtonInMessageField = val;
 	triggerHistoryUpdate();
 }
 
-void AyuGramSettings::set_showAutoDeleteButtonInMessageField(bool val) {
+void AyuSettings::set_showAutoDeleteButtonInMessageField(bool val) {
 	showAutoDeleteButtonInMessageField = val;
 	triggerHistoryUpdate();
 }
 
-void AyuGramSettings::set_showAttachPopup(bool val) {
+void AyuSettings::set_showAttachPopup(bool val) {
 	showAttachPopup = val;
 	triggerHistoryUpdate();
 }
 
-void AyuGramSettings::set_showEmojiPopup(bool val) {
+void AyuSettings::set_showEmojiPopup(bool val) {
 	showEmojiPopup = val;
 	triggerHistoryUpdate();
 }
 
-void AyuGramSettings::set_showLReadToggleInDrawer(bool val) {
+void AyuSettings::set_showLReadToggleInDrawer(bool val) {
 	showLReadToggleInDrawer = val;
 }
 
-void AyuGramSettings::set_showSReadToggleInDrawer(bool val) {
+void AyuSettings::set_showSReadToggleInDrawer(bool val) {
 	showSReadToggleInDrawer = val;
 }
 
-void AyuGramSettings::set_showGhostToggleInDrawer(bool val) {
+void AyuSettings::set_showGhostToggleInDrawer(bool val) {
 	showGhostToggleInDrawer = val;
 }
 
-void AyuGramSettings::set_showStreamerToggleInDrawer(bool val) {
+void AyuSettings::set_showStreamerToggleInDrawer(bool val) {
 	showStreamerToggleInDrawer = val;
 }
 
-void AyuGramSettings::set_showGhostToggleInTray(bool val) {
+void AyuSettings::set_showGhostToggleInTray(bool val) {
 	showGhostToggleInTray = val;
 }
 
-void AyuGramSettings::set_showStreamerToggleInTray(bool val) {
+void AyuSettings::set_showStreamerToggleInTray(bool val) {
 	showStreamerToggleInTray = val;
 }
 
-void AyuGramSettings::set_monoFont(QString val) {
+void AyuSettings::set_monoFont(QString val) {
 	monoFont = val;
 }
 
-void AyuGramSettings::set_showPeerId(int val) {
+void AyuSettings::set_showPeerId(int val) {
 	showPeerId = val;
 	showPeerIdReactive = val;
 }
 
-void AyuGramSettings::set_hideNotificationCounters(bool val) {
+void AyuSettings::set_hideNotificationCounters(bool val) {
 	hideNotificationCounters = val;
 }
 
-void AyuGramSettings::set_hideNotificationBadge(bool val) {
+void AyuSettings::set_hideNotificationBadge(bool val) {
 	hideNotificationBadge = val;
 }
 
-void AyuGramSettings::set_hideAllChatsFolder(bool val) {
+void AyuSettings::set_hideAllChatsFolder(bool val) {
 	hideAllChatsFolder = val;
 }
 
-void AyuGramSettings::set_channelBottomButton(int val) {
+void AyuSettings::set_channelBottomButton(int val) {
 	channelBottomButton = val;
 }
 
-void AyuGramSettings::set_showMessageSeconds(bool val) {
+void AyuSettings::set_showMessageSeconds(bool val) {
 	showMessageSeconds = val;
 }
 
-void AyuGramSettings::set_showMessageShot(bool val) {
+void AyuSettings::set_showMessageShot(bool val) {
 	showMessageShot = val;
 }
 
-void AyuGramSettings::set_stickerConfirmation(bool val) {
+void AyuSettings::set_stickerConfirmation(bool val) {
 	stickerConfirmation = val;
 }
 
-void AyuGramSettings::set_gifConfirmation(bool val) {
+void AyuSettings::set_gifConfirmation(bool val) {
 	gifConfirmation = val;
 }
 
-void AyuGramSettings::set_voiceConfirmation(bool val) {
+void AyuSettings::set_voiceConfirmation(bool val) {
 	voiceConfirmation = val;
 }
 
+// Глобальные утилиты для совместимости с существующим кодом
 bool isUseScheduledMessages() {
-	const auto settings = &getInstance();
+	const auto settings = AyuSettings::GetInstance();
 	return isGhostModeActive() && settings->useScheduledMessages;
 }
 
@@ -599,4 +640,4 @@ rpl::producer<> get_historyUpdateReactive() {
 	return historyUpdateReactive.events();
 }
 
-}
+} // namespace Ayu
