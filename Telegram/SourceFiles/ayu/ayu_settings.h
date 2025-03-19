@@ -1,22 +1,35 @@
-// This is the source code of AyuGram for Desktop.
-//
-// We do not and cannot prevent the use of our code,
-// but be respectful and credit the original author.
-//
-// Copyright @Radolyn, 2025
 #pragma once
 
 #include "ayu/libs/json.hpp"
 #include "ayu/libs/json_ext.hpp"
+#include "ayu/theme_settings.h"
 #include "rpl/producer.h"
 
-namespace AyuSettings {
+namespace Ayu {
 
-class AyuGramSettings
+class AyuSettings
 {
 public:
-	AyuGramSettings();
+	static AyuSettings* GetInstance();
+	
+	// Инициализация настроек
+	void Initialize();
+	
+	// Загрузка настроек из файла
+	void Load();
+	
+	// Сохранение настроек в файл
+	void Save();
+	
+	// Получение и установка настроек темы
+	const ThemeSettings& GetThemeSettings() const;
+	void SetThemeSettings(const ThemeSettings& settings);
+	
+	// Сигналы об изменении темы
+	void notifyThemeChanged();
+	rpl::producer<> themeChanged() const;
 
+	// Стандартные настройки AyuGram
 	bool sendReadMessages;
 	bool sendReadStories;
 	bool sendOnlinePackets;
@@ -174,10 +187,23 @@ public:
 	void set_stickerConfirmation(bool val);
 	void set_gifConfirmation(bool val);
 	void set_voiceConfirmation(bool val);
+
+private:
+	AyuSettings();
+	~AyuSettings();
+	
+	// Настройки темы
+	ThemeSettings _themeSettings;
+	
+	// Сигнал для оповещения об изменении темы
+	rpl::event_stream<> _themeChanged;
+	
+	// Синглтон
+	static AyuSettings* _instance;
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	AyuGramSettings,
+	Ayu::AyuSettings,
 	sendReadMessages,
 	sendReadStories,
 	sendOnlinePackets,
@@ -238,18 +264,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	voiceConfirmation
 );
 
-AyuGramSettings &getInstance();
-
-void load();
-void save();
+// Вспомогательные функции для совместимости с кодом AyuGram
+bool isGhostModeActive();
+bool isUseScheduledMessages();
 
 rpl::producer<QString> get_deletedMarkReactive();
 rpl::producer<QString> get_editedMarkReactive();
 
 rpl::producer<int> get_showPeerIdReactive();
-
-bool isGhostModeActive();
-bool isUseScheduledMessages();
 
 rpl::producer<bool> get_ghostModeEnabledReactive();
 
