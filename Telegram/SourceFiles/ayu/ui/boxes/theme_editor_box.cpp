@@ -1,333 +1,435 @@
 #include "ayu/ui/boxes/theme_editor_box.h"
 
-#include "lang/lang_keys.h"
+#include "styles/style_boxes.h"
+#include "styles/style_chat.h"
+#include "styles/style_layers.h"
+#include "styles/style_menu_icons.h"
+#include "ui/boxes/confirm_box.h"
 #include "ui/widgets/buttons.h"
-#include "ui/widgets/labels.h"
 #include "ui/widgets/checkbox.h"
-#include "ui/widgets/shadow.h"
-#include "ui/widgets/continuous_sliders.h"
+#include "ui/widgets/input_fields.h"
+#include "ui/widgets/labels.h"
 #include "ui/wrap/vertical_layout.h"
 #include "ui/wrap/slide_wrap.h"
-#include "ui/wrap/padding_wrap.h"
-#include "ui/layers/layer_manager.h"
+#include "ui/toast/toast.h"
 #include "ui/text/text_utilities.h"
-#include "styles/style_boxes.h"
-#include "styles/style_layers.h"
-#include "styles/style_settings.h"
-#include "ayu/ayu_settings.h"
-#include "ayu/ui/widgets/color_button.h"
+#include "lang/lang_keys.h"
+#include "ayu/config.h"
+#include "window/window_session_controller.h"
+#include "main/main_session.h"
+#include "base/platform/base_platform_info.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 
-namespace Ayu::Ui {
+#include <QColorDialog>
 
+namespace Ayu {
+
+// Вспомогательный класс для создания кнопки выбора цвета
+class ColorButton : public Ui::RippleButton {
+public:
+    ColorButton(QWidget *parent, const QString &title, const QColor &initialColor)
+        : Ui::RippleButton(parent, st::defaultRippleAnimation)
+        , _title(title)
+        , _color(initialColor) {
+        resize(st::defaultColorButton.width, st::defaultColorButton.height);
+        setClickedCallback([this] { showColorDialog(); });
+    }
+
+    void setColor(const QColor &color) {
+        if (_color != color) {
+            _color = color;
+            update();
+            if (_callback) {
+                _callback(_color);
+            }
+        }
+    }
+
+    QColor color() const {
+        return _color;
+    }
+
+    void setColorChangeCallback(Fn<void(QColor)> callback) {
+        _callback = std::move(callback);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *e) override {
+        Painter p(this);
+        
+        // Рисуем фон кнопки
+        p.fillRect(rect(), st::boxBg);
+        
+        // Рисуем образец цвета
+        const auto colorRect = QRect(
+            st::defaultColorButton.padding.left(),
+            st::defaultColorButton.padding.top(),
+            st::defaultColorButton.sampleSize,
+            st::defaultColorButton.sampleSize);
+        
+        p.fillRect(colorRect, _color);
+        p.setPen(st::defaultColorButton.border);
+        p.drawRect(colorRect.adjusted(0, 0, -1, -1));
+        
+        // Рисуем текст
+        p.setPen(st::defaultColorButton.textFg);
+        p.setFont(st::defaultColorButton.font);
+        p.drawText(
+            st::defaultColorButton.padding.left() + st::defaultColorButton.sampleSize + st::defaultColorButton.textLeft,
+            st::defaultColorButton.padding.top() + st::defaultColorButton.textTop + st::defaultColorButton.font->ascent,
+            _title);
+        
+        // Рисуем ripple-эффект
+        if (hasRipple()) {
+            paintRipple(p, 0, 0);
+        }
+    }
+
+private:
+    void showColorDialog() {
+        QColorDialog dialog(parentWidget());
+        dialog.setCurrentColor(_color);
+        if (dialog.exec() == QDialog::Accepted) {
+            setColor(dialog.currentColor());
+        }
+    }
+
+    QString _title;
+    QColor _color;
+    Fn<void(QColor)> _callback;
+};
+
+// Реализация класса ThemeEditorBox
 ThemeEditorBox::ThemeEditorBox(QWidget *parent, not_null<Window::SessionController*> controller)
-	: Ui::BoxContent(parent)
-	, _controller(controller)
-	, _initialSettings(Ayu::AyuSettings::GetInstance()->GetThemeSettings()) {
-	prepare();
+    : Ui::BoxContent(parent)
+    , _controller(controller) {
+    // Загрузка текущих настроек темы из конфигурации
+    loadSettings();
 }
 
-ThemeEditorBox::~ThemeEditorBox() {
+void ThemeEditorBox::loadSettings() {
+    // Загружаем настройки из конфигурации или устанавливаем значения по умолчанию
+    auto &settings = Core::App().settings();
+    
+    // Цвета чата
+    _messageInBg = st::msgInBg->c;
+    _messageOutBg = st::msgOutBg->c;
+    _messageBgSelected = st::msgSelectBg->c;
+    _messageBgSelectedOverlay = st::msgSelectOverlay->c;
+    
+    // Настройки шрифтов
+    _fontSizeMultiplier = settings.chatFontSizeMultiplier();
+    _useSystemFont = settings.useSystemFont();
+    
+    // Настройки пузырей
+    _useBubbles = settings.chatBubble();
+    _useWideForOutboundMessages = settings.chatWide();
+    _useCornersForOutboundMessages = settings.chatRounded();
+    
+    // Настройки фона
+    _useCustomChatBackground = !Ayu::config().disableCustomBackgrounds();
+    _customChatBackground = settings.chatBackgroundPath();
 }
 
 void ThemeEditorBox::prepare() {
-	setTitle(tr::lng_ayu_theme_editor_title());
-	
-	const auto content = Ui::CreateChild<Ui::VerticalLayout>(this);
-	
-	// General category
-	content->add(
-		object_ptr<Ui::HeaderedDivider>(content, tr::lng_ayu_theme_general_category()));
-	
-	// Main accent color
-	auto colorLayout = content->add(
-		object_ptr<Ui::FixedHeightWidget>(
-			content,
-			st::settingsColorButton.height));
-	
-	_accentColorButton = Ui::CreateChild<Ayu::Ui::ColorButton>(
-		colorLayout,
-		tr::lng_ayu_theme_accent_color(),
-		_initialSettings.accentColor);
-	
-	_accentColorButton->setGeometry(0, 0, colorLayout->width(), st::settingsColorButton.height);
-	
-	_accentColorButton->colorChanged(
-	) | rpl::start_with_next([=](const QColor &color) {
-		_modifiedSettings.accentColor = color;
-		settingsChanged();
-	}, _accentColorButton->lifetime());
-	
-	// Custom font options
-	_customFontCheck = content->add(
-		object_ptr<Ui::Checkbox>(
-			content,
-			tr::lng_ayu_theme_custom_font(),
-			_initialSettings.useCustomFont,
-			st::settingsCheckbox),
-		st::settingsSectionSkip);
-		
-	_customFontCheck->checkedChanges(
-	) | rpl::start_with_next([=](bool checked) {
-		_modifiedSettings.useCustomFont = checked;
-		_fontSlideWrap->toggleAnimated(checked);
-		settingsChanged();
-	}, _customFontCheck->lifetime());
-	
-	_fontSlideWrap = content->add(
-		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-			content,
-			object_ptr<Ui::VerticalLayout>(content)));
-	
-	const auto fontSettings = _fontSlideWrap->entity();
-	
-	// Font size slider
-	fontSettings->add(
-		object_ptr<Ui::FixedHeightWidget>(
-			fontSettings,
-			st::settingsSectionSkip));
-	
-	const auto fontSizeLabel = fontSettings->add(
-		object_ptr<Ui::LabelWithNumbers>(
-			fontSettings,
-			st::settingsSliderLabel),
-		style::margins(
-			st::settingsSliderLabelMargin,
-			0,
-			st::settingsSliderLabelMargin,
-			0));
-	
-	fontSizeLabel->setText(tr::lng_ayu_theme_font_size());
-	
-	_fontSizeSlider = fontSettings->add(
-		object_ptr<Ui::MediaSlider>(
-			fontSettings,
-			st::settingsSlider),
-		st::settingsSliderPadding);
-	
-	_fontSizeSlider->resize(st::settingsSlider.seekSize);
-	_fontSizeSlider->setPseudoDiscrete(
-		20,                             // steps
-		[](int val) { return val + 8; }, // converter
-		_initialSettings.fontSize,
-		[=](int value) {                // changed callback
-			_modifiedSettings.fontSize = value;
-			fontSizeLabel->setNumber(value);
-			settingsChanged();
-		});
-	
-	// Font family selection
-	// TODO: Add font family selection
-	
-	// Chat bubble settings
-	content->add(
-		object_ptr<Ui::HeaderedDivider>(content, tr::lng_ayu_theme_bubble_category()));
-	
-	// Rounded bubbles
-	_roundedBubblesCheck = content->add(
-		object_ptr<Ui::Checkbox>(
-			content,
-			tr::lng_ayu_theme_rounded_bubbles(),
-			_initialSettings.useRoundedBubbles,
-			st::settingsCheckbox),
-		st::settingsSectionSkip);
-		
-	_roundedBubblesCheck->checkedChanges(
-	) | rpl::start_with_next([=](bool checked) {
-		_modifiedSettings.useRoundedBubbles = checked;
-		_bubbleRadiusWrap->toggleAnimated(checked);
-		settingsChanged();
-	}, _roundedBubblesCheck->lifetime());
-	
-	// Bubble radius slider
-	_bubbleRadiusWrap = content->add(
-		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-			content,
-			object_ptr<Ui::VerticalLayout>(content)));
-	
-	const auto bubbleSettings = _bubbleRadiusWrap->entity();
-	
-	bubbleSettings->add(
-		object_ptr<Ui::FixedHeightWidget>(
-			bubbleSettings,
-			st::settingsSectionSkip));
-	
-	const auto bubbleRadiusLabel = bubbleSettings->add(
-		object_ptr<Ui::LabelWithNumbers>(
-			bubbleSettings,
-			st::settingsSliderLabel),
-		style::margins(
-			st::settingsSliderLabelMargin,
-			0,
-			st::settingsSliderLabelMargin,
-			0));
-	
-	bubbleRadiusLabel->setText(tr::lng_ayu_theme_bubble_radius());
-	
-	_bubbleRadiusSlider = bubbleSettings->add(
-		object_ptr<Ui::MediaSlider>(
-			bubbleSettings,
-			st::settingsSlider),
-		st::settingsSliderPadding);
-	
-	_bubbleRadiusSlider->resize(st::settingsSlider.seekSize);
-	_bubbleRadiusSlider->setPseudoDiscrete(
-		20,                                      // steps
-		[](int val) { return val + 5; },        // converter
-		_initialSettings.bubbleRadius,
-		[=](int value) {                        // changed callback
-			_modifiedSettings.bubbleRadius = value;
-			bubbleRadiusLabel->setNumber(value);
-			settingsChanged();
-		});
-	
-	// Bubble colors
-	auto inBubbleColorLayout = content->add(
-		object_ptr<Ui::FixedHeightWidget>(
-			content,
-			st::settingsColorButton.height));
-	
-	_inBubbleColorButton = Ui::CreateChild<Ayu::Ui::ColorButton>(
-		inBubbleColorLayout,
-		tr::lng_ayu_theme_in_bubble_color(),
-		_initialSettings.inBubbleColor);
-	
-	_inBubbleColorButton->setGeometry(0, 0, inBubbleColorLayout->width(), st::settingsColorButton.height);
-	
-	_inBubbleColorButton->colorChanged(
-	) | rpl::start_with_next([=](const QColor &color) {
-		_modifiedSettings.inBubbleColor = color;
-		settingsChanged();
-	}, _inBubbleColorButton->lifetime());
-	
-	auto outBubbleColorLayout = content->add(
-		object_ptr<Ui::FixedHeightWidget>(
-			content,
-			st::settingsColorButton.height));
-	
-	_outBubbleColorButton = Ui::CreateChild<Ayu::Ui::ColorButton>(
-		outBubbleColorLayout,
-		tr::lng_ayu_theme_out_bubble_color(),
-		_initialSettings.outBubbleColor);
-	
-	_outBubbleColorButton->setGeometry(0, 0, outBubbleColorLayout->width(), st::settingsColorButton.height);
-	
-	_outBubbleColorButton->colorChanged(
-	) | rpl::start_with_next([=](const QColor &color) {
-		_modifiedSettings.outBubbleColor = color;
-		settingsChanged();
-	}, _outBubbleColorButton->lifetime());
-	
-	// Background settings
-	content->add(
-		object_ptr<Ui::HeaderedDivider>(content, tr::lng_ayu_theme_background_category()));
-	
-	// Custom background color
-	_customBgCheck = content->add(
-		object_ptr<Ui::Checkbox>(
-			content,
-			tr::lng_ayu_theme_custom_bg(),
-			_initialSettings.useCustomBackground,
-			st::settingsCheckbox),
-		st::settingsSectionSkip);
-		
-	_customBgCheck->checkedChanges(
-	) | rpl::start_with_next([=](bool checked) {
-		_modifiedSettings.useCustomBackground = checked;
-		_bgColorWrap->toggleAnimated(checked);
-		settingsChanged();
-	}, _customBgCheck->lifetime());
-	
-	// Background color
-	_bgColorWrap = content->add(
-		object_ptr<Ui::SlideWrap<Ui::FixedHeightWidget>>(
-			content,
-			object_ptr<Ui::FixedHeightWidget>(
-				content,
-				st::settingsColorButton.height)));
-	
-	_bgColorButton = Ui::CreateChild<Ayu::Ui::ColorButton>(
-		_bgColorWrap->entity(),
-		tr::lng_ayu_theme_bg_color(),
-		_initialSettings.backgroundColor);
-	
-	_bgColorButton->setGeometry(0, 0, _bgColorWrap->width(), st::settingsColorButton.height);
-	
-	_bgColorButton->colorChanged(
-	) | rpl::start_with_next([=](const QColor &color) {
-		_modifiedSettings.backgroundColor = color;
-		settingsChanged();
-	}, _bgColorButton->lifetime());
-	
-	// Bottom buttons
-	addButton(tr::lng_settings_save(), [=] { save(); });
-	addButton(tr::lng_cancel(), [=] { closeBox(); });
-	
-	_resetButton = addLeftButton(tr::lng_ayu_theme_reset(), [=] { reset(); });
-	_resetButton->setVisible(false);
-	
-	// Set initial visibility states
-	_fontSlideWrap->toggleFast(_initialSettings.useCustomFont);
-	_bubbleRadiusWrap->toggleFast(_initialSettings.useRoundedBubbles);
-	_bgColorWrap->toggleFast(_initialSettings.useCustomBackground);
-	
-	// Set content widget
-	setDimensionsToContent(st::boxWideWidth, content);
-	Ui::BoxContent::setInner(std::move(content));
+    setTitle(tr::lng_ayu_theme_editor_title());
+    
+    addButton(tr::lng_settings_save(), [=] { save(); });
+    addButton(tr::lng_cancel(), [=] { closeBox(); });
+    
+    setupContent();
 }
 
-void ThemeEditorBox::settingsChanged() {
-	const bool changed = 
-		_initialSettings.accentColor != _modifiedSettings.accentColor ||
-		_initialSettings.useCustomFont != _modifiedSettings.useCustomFont ||
-		_initialSettings.fontSize != _modifiedSettings.fontSize ||
-		_initialSettings.useRoundedBubbles != _modifiedSettings.useRoundedBubbles ||
-		_initialSettings.bubbleRadius != _modifiedSettings.bubbleRadius ||
-		_initialSettings.inBubbleColor != _modifiedSettings.inBubbleColor ||
-		_initialSettings.outBubbleColor != _modifiedSettings.outBubbleColor ||
-		_initialSettings.useCustomBackground != _modifiedSettings.useCustomBackground ||
-		_initialSettings.backgroundColor != _modifiedSettings.backgroundColor;
-	
-	_resetButton->setVisible(changed);
+void ThemeEditorBox::setupContent() {
+    const auto content = verticalLayout();
+    
+    // Добавляем группы настроек
+    setupColorSettings(content);
+    setupFontSettings(content);
+    setupBubbleSettings(content);
+    setupBackgroundSettings(content);
+    
+    // Добавляем кнопку сброса настроек
+    const auto resetButton = content->add(
+        object_ptr<Ui::LinkButton>(
+            content,
+            tr::lng_ayu_theme_editor_reset(tr::now)),
+        st::boxLinkButton);
+    
+    resetButton->setClickedCallback([=] {
+        showResetConfirmation();
+    });
+}
+
+void ThemeEditorBox::setupColorSettings(not_null<Ui::VerticalLayout*> container) {
+    container->add(
+        object_ptr<Ui::GenericBox::Section>(
+            container,
+            tr::lng_ayu_theme_editor_colors(tr::now),
+            st::boxTitle),
+        style::margins(0, 0, 0, 10));
+
+    // Кнопки выбора цвета для сообщений
+    auto createColorButton = [&](const QString &title, const QColor &initialColor, auto callback) {
+        auto button = object_ptr<ColorButton>(container, title, initialColor);
+        button->setColorChangeCallback(std::move(callback));
+        container->add(std::move(button), st::boxRowPadding);
+    };
+
+    // Входящие сообщения
+    createColorButton(
+        tr::lng_ayu_theme_editor_message_in_bg(tr::now),
+        _messageInBg,
+        [this](QColor color) { _messageInBg = color; }
+    );
+
+    // Исходящие сообщения
+    createColorButton(
+        tr::lng_ayu_theme_editor_message_out_bg(tr::now),
+        _messageOutBg,
+        [this](QColor color) { _messageOutBg = color; }
+    );
+
+    // Выделенные сообщения
+    createColorButton(
+        tr::lng_ayu_theme_editor_message_selected_bg(tr::now),
+        _messageBgSelected,
+        [this](QColor color) { _messageBgSelected = color; }
+    );
+
+    // Оверлей для выделенных сообщений
+    createColorButton(
+        tr::lng_ayu_theme_editor_message_selected_overlay(tr::now),
+        _messageBgSelectedOverlay,
+        [this](QColor color) { _messageBgSelectedOverlay = color; }
+    );
+}
+
+void ThemeEditorBox::setupFontSettings(not_null<Ui::VerticalLayout*> container) {
+    container->add(
+        object_ptr<Ui::GenericBox::Section>(
+            container,
+            tr::lng_ayu_theme_editor_fonts(tr::now),
+            st::boxTitle),
+        style::margins(0, 10, 0, 10));
+
+    // Использовать системный шрифт
+    _systemFontCheckbox = container->add(
+        object_ptr<Ui::Checkbox>(
+            container,
+            tr::lng_ayu_theme_editor_use_system_font(tr::now),
+            _useSystemFont,
+            st::defaultCheckbox),
+        st::boxRowPadding);
+
+    // Размер шрифта
+    container->add(
+        object_ptr<Ui::FlatLabel>(
+            container,
+            tr::lng_ayu_theme_editor_font_size(tr::now),
+            st::boxLabel),
+        st::boxRowPadding);
+
+    const auto fontSizes = std::vector<QString>{
+        "85%", "100%", "115%", "125%"
+    };
+
+    const auto fontSizeGroup = std::make_shared<Ui::RadiobuttonGroup>(_fontSizeMultiplier - 1);
+    
+    for (auto i = 0; i < fontSizes.size(); i++) {
+        container->add(
+            object_ptr<Ui::Radiobutton>(
+                container,
+                fontSizeGroup,
+                i,
+                fontSizes[i],
+                st::defaultRadiobutton),
+            st::boxRowPadding);
+    }
+
+    fontSizeGroup->setChangedCallback([this](int value) {
+        _fontSizeMultiplier = value + 1;
+    });
+}
+
+void ThemeEditorBox::setupBubbleSettings(not_null<Ui::VerticalLayout*> container) {
+    container->add(
+        object_ptr<Ui::GenericBox::Section>(
+            container,
+            tr::lng_ayu_theme_editor_bubbles(tr::now),
+            st::boxTitle),
+        style::margins(0, 10, 0, 10));
+
+    // Использовать пузыри для сообщений
+    _useBubblesCheckbox = container->add(
+        object_ptr<Ui::Checkbox>(
+            container,
+            tr::lng_ayu_theme_editor_use_bubbles(tr::now),
+            _useBubbles,
+            st::defaultCheckbox),
+        st::boxRowPadding);
+
+    // Дополнительные опции для пузырей
+    auto createBubbleOptionsWrap = [&] {
+        return container->add(
+            object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+                container,
+                object_ptr<Ui::VerticalLayout>(container)),
+            st::boxRowPadding);
+    };
+
+    _bubbleOptionsWrap = createBubbleOptionsWrap();
+    const auto inner = _bubbleOptionsWrap->entity();
+
+    // Широкие пузыри для исходящих сообщений
+    _wideOutboundCheckbox = inner->add(
+        object_ptr<Ui::Checkbox>(
+            inner,
+            tr::lng_ayu_theme_editor_use_wide_outbound(tr::now),
+            _useWideForOutboundMessages,
+            st::defaultCheckbox),
+        st::boxRowPadding);
+
+    // Закругленные углы для исходящих сообщений
+    _roundedOutboundCheckbox = inner->add(
+        object_ptr<Ui::Checkbox>(
+            inner,
+            tr::lng_ayu_theme_editor_use_corners_outbound(tr::now),
+            _useCornersForOutboundMessages,
+            st::defaultCheckbox),
+        st::boxRowPadding);
+
+    // Обновляем видимость опций пузырей
+    _bubbleOptionsWrap->toggle(_useBubbles, anim::type::normal);
+    
+    // Добавляем обработчик для чекбокса пузырей
+    _useBubblesCheckbox->checkedChanges(
+    ) | rpl::start_with_next([=](bool checked) {
+        _useBubbles = checked;
+        _bubbleOptionsWrap->toggle(checked, anim::type::normal);
+    }, lifetime());
+}
+
+void ThemeEditorBox::setupBackgroundSettings(not_null<Ui::VerticalLayout*> container) {
+    container->add(
+        object_ptr<Ui::GenericBox::Section>(
+            container,
+            tr::lng_ayu_theme_editor_background(tr::now),
+            st::boxTitle),
+        style::margins(0, 10, 0, 10));
+
+    // Использовать пользовательский фон чата
+    _useCustomBackgroundCheckbox = container->add(
+        object_ptr<Ui::Checkbox>(
+            container,
+            tr::lng_ayu_theme_editor_use_custom_background(tr::now),
+            _useCustomChatBackground,
+            st::defaultCheckbox),
+        st::boxRowPadding);
+
+    // Выбор фона чата
+    auto createBackgroundSelectorWrap = [&] {
+        return container->add(
+            object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+                container,
+                object_ptr<Ui::VerticalLayout>(container)),
+            st::boxRowPadding);
+    };
+
+    _backgroundSelectorWrap = createBackgroundSelectorWrap();
+    const auto inner = _backgroundSelectorWrap->entity();
+
+    // Текущий фон
+    inner->add(
+        object_ptr<Ui::FlatLabel>(
+            inner,
+            _customChatBackground.isEmpty() 
+                ? tr::lng_ayu_theme_editor_no_background(tr::now)
+                : QFileInfo(_customChatBackground).fileName(),
+            st::boxLabel),
+        st::boxRowPadding);
+
+    // Кнопка выбора фона
+    inner->add(
+        object_ptr<Ui::LinkButton>(
+            inner,
+            tr::lng_ayu_theme_editor_select_background(tr::now)),
+        st::boxRowPadding)->setClickedCallback([=] {
+            chooseBackground();
+        });
+
+    // Обновляем видимость селектора фона
+    _backgroundSelectorWrap->toggle(_useCustomChatBackground, anim::type::normal);
+    
+    // Добавляем обработчик для чекбокса пользовательского фона
+    _useCustomBackgroundCheckbox->checkedChanges(
+    ) | rpl::start_with_next([=](bool checked) {
+        _useCustomChatBackground = checked;
+        _backgroundSelectorWrap->toggle(checked, anim::type::normal);
+    }, lifetime());
+}
+
+void ThemeEditorBox::chooseBackground() {
+    // Реализация выбора файла фона чата
+    // В реальном приложении здесь должен быть диалог выбора файла
+    Ui::Toast::Show(box(), "Выбор фона будет реализован позже");
+}
+
+void ThemeEditorBox::showResetConfirmation() {
+    const auto weak = Ui::MakeWeak(this);
+    Ui::show(Ui::MakeConfirmBox({
+        .text = tr::lng_ayu_theme_editor_reset_confirm(),
+        .confirmed = [=] {
+            if (weak) {
+                resetSettings();
+            }
+        },
+        .confirmText = tr::lng_ayu_theme_editor_reset_yes(),
+        .cancelText = tr::lng_cancel(),
+    }));
+}
+
+void ThemeEditorBox::resetSettings() {
+    // Сбрасываем настройки на значения по умолчанию
+    loadSettings();
+    
+    // Перезагружаем интерфейс
+    closeBox();
+    _controller->show(Box<ThemeEditorBox>(_controller));
+    
+    Ui::Toast::Show(tr::lng_ayu_theme_editor_reset_done(tr::now));
 }
 
 void ThemeEditorBox::save() {
-	// Save settings to Ayu::AyuSettings
-	auto settings = Ayu::AyuSettings::GetInstance();
-	settings->SetThemeSettings(_modifiedSettings);
-	
-	// Apply settings visually
-	applySettings();
-	
-	// Close dialog
-	closeBox();
+    auto &settings = Core::App().settings();
+    
+    // Сохраняем настройки цветов
+    // Здесь должна быть реализация сохранения цветов в настройки темы
+    
+    // Сохраняем настройки шрифтов
+    settings.setChatFontSizeMultiplier(_fontSizeMultiplier);
+    settings.setUseSystemFont(_systemFontCheckbox->checked());
+    
+    // Сохраняем настройки пузырей
+    settings.setChatBubble(_useBubblesCheckbox->checked());
+    if (_useBubblesCheckbox->checked()) {
+        settings.setChatWide(_wideOutboundCheckbox->checked());
+        settings.setChatRounded(_roundedOutboundCheckbox->checked());
+    }
+    
+    // Сохраняем настройки фона
+    Ayu::config().setDisableCustomBackgrounds(!_useCustomBackgroundCheckbox->checked());
+    
+    // Применяем настройки
+    Core::App().saveSettingsDelayed();
+    Ayu::config().save();
+    
+    // Показываем уведомление
+    Ui::Toast::Show(tr::lng_ayu_theme_editor_saved(tr::now));
+    
+    // Закрываем окно
+    closeBox();
 }
 
-void ThemeEditorBox::reset() {
-	// Reset sliders and checkboxes to initial values
-	_accentColorButton->setColor(_initialSettings.accentColor);
-	_customFontCheck->setChecked(_initialSettings.useCustomFont);
-	_fontSizeSlider->setValue(_initialSettings.fontSize);
-	_roundedBubblesCheck->setChecked(_initialSettings.useRoundedBubbles);
-	_bubbleRadiusSlider->setValue(_initialSettings.bubbleRadius);
-	_inBubbleColorButton->setColor(_initialSettings.inBubbleColor);
-	_outBubbleColorButton->setColor(_initialSettings.outBubbleColor);
-	_customBgCheck->setChecked(_initialSettings.useCustomBackground);
-	_bgColorButton->setColor(_initialSettings.backgroundColor);
-	
-	// Reset modified settings to initial values
-	_modifiedSettings = _initialSettings;
-	
-	// Update UI state
-	settingsChanged();
-}
-
-void ThemeEditorBox::applySettings() {
-	// Apply the theme settings to the application
-	// This would typically involve updating the application's palette and styles
-	
-	// Emit signal that theme has changed
-	// This would be connected to handlers that update the UI components
-	Ayu::AyuSettings::GetInstance()->notifyThemeChanged();
-}
-
-} // namespace Ayu::Ui
+} // namespace Ayu
